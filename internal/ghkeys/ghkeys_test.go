@@ -1,0 +1,133 @@
+package ghkeys
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/nicerobot/ssh-tgzx/internal/constants"
+)
+
+func generateEd25519Key(t *testing.T) string {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	sshPub, err := ssh.NewPublicKey(pub)
+	require.NoError(t, err)
+	return string(ssh.MarshalAuthorizedKey(sshPub))
+}
+
+func generateRSAKey(t *testing.T) string {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	sshPub, err := ssh.NewPublicKey(&priv.PublicKey)
+	require.NoError(t, err)
+	return string(ssh.MarshalAuthorizedKey(sshPub))
+}
+
+func TestFetchRecipients(t *testing.T) {
+	t.Parallel()
+
+	ed25519Key := generateEd25519Key(t)
+	rsaKey := generateRSAKey(t)
+
+	tests := []struct {
+		name      string
+		body      string
+		status    int
+		wantCount int
+		wantErr   error
+	}{
+		{
+			name:      "ed25519 key",
+			body:      ed25519Key,
+			status:    http.StatusOK,
+			wantCount: 1,
+		},
+		{
+			name:      "RSA key",
+			body:      rsaKey,
+			status:    http.StatusOK,
+			wantCount: 1,
+		},
+		{
+			name:      "mixed keys",
+			body:      ed25519Key + rsaKey,
+			status:    http.StatusOK,
+			wantCount: 2,
+		},
+		{
+			name:      "mixed with unsupported ECDSA prefix",
+			body:      ed25519Key + "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY=\n" + rsaKey,
+			status:    http.StatusOK,
+			wantCount: 2,
+		},
+		{
+			name:    "no keys - empty response",
+			body:    "",
+			status:  http.StatusOK,
+			wantErr: constants.ErrNoValidKeys,
+		},
+		{
+			name:    "HTTP error",
+			body:    "not found",
+			status:  http.StatusNotFound,
+			wantErr: constants.ErrFetchKeys,
+		},
+		{
+			name:    "only blank lines",
+			body:    "\n\n\n",
+			status:  http.StatusOK,
+			wantErr: constants.ErrNoValidKeys,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			want, must := assert.New(t), require.New(t)
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.status)
+				w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			// Override the URL by using a custom client that rewrites requests
+			client := &rewriteClient{base: srv.Client(), targetURL: srv.URL}
+
+			rcpts, err := FetchRecipients(context.Background(), client, "testuser")
+
+			if tt.wantErr != nil {
+				must.Error(err)
+				want.ErrorIs(err, tt.wantErr)
+				return
+			}
+
+			must.NoError(err)
+			want.Len(rcpts, tt.wantCount)
+		})
+	}
+}
+
+// rewriteClient rewrites the request URL to point at the test server.
+type rewriteClient struct {
+	base      *http.Client
+	targetURL string
+}
+
+func (c *rewriteClient) Do(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = "http"
+	req.URL.Host = c.targetURL[len("http://"):]
+	return c.base.Do(req)
+}

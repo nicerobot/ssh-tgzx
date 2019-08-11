@@ -1,0 +1,39 @@
+/dist/
+/.idea
+!/.idea/
+/.idea/*
+!/.idea/runConfigurations/
+/var/
+
+# Binaries
+/dist/
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test artifacts
+*.test
+*.out
+/coverage*
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+/.claude/
+/.cursor/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
